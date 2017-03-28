@@ -185,8 +185,8 @@ static char *getSharedKey(request_rec *r,char *filename, char **static_pw) {
 
 		authn_google_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_google_module);
     status = ap_pcfg_openfile(&f, r->pool, filename);
-ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-"OPENING FILENAME %s",filename);
+    if (conf->debugLevel)
+	ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r, "OPENING FILENAME %s",filename);
 
     if (status != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
@@ -231,7 +231,8 @@ static uint8_t *getUserSecret(request_rec *r, const char *username, int *secretL
     authn_google_config_rec *conf = ap_get_module_config(r->per_dir_config,
                                                        &authn_google_module);
 		
-		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "getUserSecret with username \"%s\"\n",username);
+		if (conf->debugLevel)
+		    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "getUserSecret with username \"%s\"\n",username);
 		
 		if (bad_username(username)) return 0L;
 		
