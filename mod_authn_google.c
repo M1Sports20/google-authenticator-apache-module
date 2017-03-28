@@ -145,6 +145,27 @@ static const command_rec authn_google_cmds[] =
 
 module AP_MODULE_DECLARE_DATA authn_google_module;
 
+static int bad_username(const char *username)
+{
+	for(; *username; ++username)
+	{
+		if (	*username <= ' ' //we simply don't like it
+			|| *username == ':' //cookie value separator
+			|| *username == ';' //cookie options separator
+			// some from https://en.wikipedia.org/wiki/Filename#Reserved_characters_and_words
+			|| *username == '/'
+			|| *username == '\\'
+			|| *username == '?'
+			|| *username == '*'
+			|| *username == '|'
+			|| *username == '"'
+			|| *username == '<'
+			|| *username == '>'
+			)
+			return 1;
+	}
+	return 0;
+}
 
 static char * hash_cookie(apr_pool_t *p, uint8_t *secret,int secretLen,unsigned long expires) {
 		unsigned char hash[SHA1_DIGEST_LENGTH];
@@ -209,16 +230,13 @@ if (conf->debugLevel)
 static uint8_t *getUserSecret(request_rec *r, const char *username, int *secretLen, char **static_pw) {
     authn_google_config_rec *conf = ap_get_module_config(r->per_dir_config,
                                                        &authn_google_module);
+		
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "getUserSecret with username \"%s\"\n",username);
+		
+		if (bad_username(username)) return 0L;
+		
 		char *ga_filename = apr_psprintf(r->pool,"%s/%s",conf->pwfile,username);
-		char *sharedKey;
-
-ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-"getUserSecret with username \"%s\"\n",username);
-		sharedKey = getSharedKey(r,ga_filename,static_pw);
-		if (!sharedKey)
-        return 0L;
-
-
+		char *sharedKey = getSharedKey(r,ga_filename,static_pw);
 		if (!sharedKey)
 			return 0L;
 
@@ -472,11 +490,13 @@ if (conf->debugLevel)
 
 		unsigned char *hash = apr_palloc(r->pool,APR_MD5_DIGESTSIZE);
 
-
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+			"GetRealmHash called for sharedkey \"%s/%s\"\n", conf->pwfile, user);
+		
+		if (bad_username(user)) return AUTH_USER_NOT_FOUND;
+		
 		ga_filename = apr_psprintf(r->pool,"%s/%s",conf->pwfile,user);
 
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-"GetRealmHash called for sharedkey \"%s\"\n",ga_filename);
 		sharedKey = getSharedKey(r,ga_filename,&static_pw);
 
 		if (!sharedKey)
