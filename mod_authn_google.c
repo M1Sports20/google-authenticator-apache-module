@@ -51,7 +51,10 @@ ap_regex_t *cookie_regexp;
 ap_regex_t *passwd_regexp;
 typedef struct {
     char *pwfile;
+    char *cookieDomain;
+    char *cookiePath;
 		int cookieLife;
+		int cookieSecure;
 		int entryWindow;
 		int debugLevel;
 } authn_google_config_rec;
@@ -90,7 +93,10 @@ static void *create_authn_google_dir_config(apr_pool_t *p, char *d)
     authn_google_config_rec *conf = apr_palloc(p, sizeof(*conf));
 
     conf->pwfile = NULL;     /* just to illustrate the default really */
+    conf->cookieDomain = NULL;
+    conf->cookiePath = NULL;
 		conf->cookieLife=0;
+		conf->cookieSecure=0;
 		conf->entryWindow=0;
 		conf->debugLevel=0;
     return conf;
@@ -116,9 +122,18 @@ static const command_rec authn_google_cmds[] =
     AP_INIT_TAKE12("GoogleAuthUserPath", set_authn_google_slot,
                    (void *)APR_OFFSETOF(authn_google_config_rec, pwfile),
                    OR_AUTHCFG, "Directory containing Google Authenticator credential files"),
+    AP_INIT_TAKE1("GoogleAuthCookieDomain", ap_set_string_slot,
+                   (void *)APR_OFFSETOF(authn_google_config_rec, cookieDomain),
+                   OR_AUTHCFG, "Cookie Domain to set(if any)"),
+    AP_INIT_TAKE1("GoogleAuthCookiePath", ap_set_string_slot,
+                   (void *)APR_OFFSETOF(authn_google_config_rec, cookiePath),
+                   OR_AUTHCFG, "Cookie Path to set(if any)"),
     AP_INIT_TAKE1("GoogleAuthCookieLife", set_authn_set_int,
                    (void *)APR_OFFSETOF(authn_google_config_rec, cookieLife),
                    OR_AUTHCFG, "Life (in seconds) authentication cookie before revalidation required"),
+    AP_INIT_TAKE1("GoogleAuthCookieSecure", set_authn_set_int,
+                   (void *)APR_OFFSETOF(authn_google_config_rec, cookieSecure),
+                   OR_AUTHCFG, "Mark cookie secure (https only)"),
     AP_INIT_TAKE1("GoogleAuthLogLevel", set_authn_set_int,
                    (void *)APR_OFFSETOF(authn_google_config_rec, debugLevel),
                    OR_AUTHCFG, "Verbosity level of debug output (zero=off)"),
@@ -339,7 +354,13 @@ static void addCookie(request_rec *r, uint8_t *secret, int secretLen) {
 
 		unsigned long exp = (apr_time_now() / (1000000) ) + conf->cookieLife;
 		char *h = hash_cookie(r->pool,secret,secretLen,exp);
-		char * cookie = apr_psprintf(r->pool,"google_authn=%s:%lu:%s",r->user,exp,h);
+		char * cookie = apr_psprintf(r->pool,
+		    "google_authn=%s:%lu:%s%s%s%s%s%s",
+		    r->user, exp, h,
+		    conf->cookieSecure ? "; Secure" : "",
+		    conf->cookiePath ? "; Path=" : "", conf->cookiePath ? conf->cookiePath : "",
+		    conf->cookieDomain ? "; Domain=" : "", conf->cookieDomain ? conf->cookieDomain : ""
+		    );
 
 if (conf->debugLevel)
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
