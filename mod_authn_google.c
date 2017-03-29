@@ -47,8 +47,8 @@
 
 #define DEBUG
 
-ap_regex_t *cookie_regexp;
-ap_regex_t *passwd_regexp;
+static ap_regex_t *cookie_regexp;
+static ap_regex_t *passwd_regexp;
 typedef struct {
     char *pwfile;
     char *cookieDomain;
@@ -147,6 +147,10 @@ module AP_MODULE_DECLARE_DATA authn_google_module;
 
 static int bad_username(const char *username)
 {
+	if (*username == 0)
+	{
+		return 1;
+	}
 	for(; *username; ++username)
 	{
 		if (	*username <= ' ' //we simply don't like it
@@ -271,7 +275,7 @@ static int find_cookie(request_rec *r,char **user,uint8_t *secret,int secretLen)
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 												"Found cookie \"%s\"",cookie);
 		if (!ap_regexec(cookie_regexp, cookie, AP_MAX_REG_MATCH, regmatch, 0)) {
-			if (user) *user  = ap_pregsub(r->pool, "$2", cookie,AP_MAX_REG_MATCH,regmatch);
+			*user  = ap_pregsub(r->pool, "$2", cookie,AP_MAX_REG_MATCH,regmatch);
 			cookie_expire = ap_pregsub(r->pool, "$3", cookie,AP_MAX_REG_MATCH,regmatch);
 			cookie_valid = ap_pregsub(r->pool, "$4", cookie,AP_MAX_REG_MATCH,regmatch);
 				
@@ -279,7 +283,7 @@ if (conf->debugLevel)
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "Found cookie Expires \"%s\" Valid \"%s\"",cookie_expire,cookie_valid);
 
-				if (cookie_expire && cookie_valid && *user) {
+				if (cookie_expire && cookie_valid && (!bad_username(*user))) {
 					long unsigned int exp = apr_atoi64(cookie_expire);
 					long unsigned int now = apr_time_now()/1000000;
 					if (exp < now) {
