@@ -47,11 +47,14 @@
 
 #define DEBUG
 
-ap_regex_t *cookie_regexp;
-ap_regex_t *passwd_regexp;
+static ap_regex_t *cookie_regexp;
+static ap_regex_t *passwd_regexp;
 typedef struct {
     char *pwfile;
+    char *cookieDomain;
+    char *cookiePath;
 		int cookieLife;
+		int cookieSecure;
 		int entryWindow;
 		int debugLevel;
 } authn_google_config_rec;
@@ -90,7 +93,10 @@ static void *create_authn_google_dir_config(apr_pool_t *p, char *d)
     authn_google_config_rec *conf = apr_palloc(p, sizeof(*conf));
 
     conf->pwfile = NULL;     /* just to illustrate the default really */
+    conf->cookieDomain = NULL;
+    conf->cookiePath = NULL;
 		conf->cookieLife=0;
+		conf->cookieSecure=0;
 		conf->entryWindow=0;
 		conf->debugLevel=0;
     return conf;
@@ -116,9 +122,18 @@ static const command_rec authn_google_cmds[] =
     AP_INIT_TAKE12("GoogleAuthUserPath", set_authn_google_slot,
                    (void *)APR_OFFSETOF(authn_google_config_rec, pwfile),
                    OR_AUTHCFG, "Directory containing Google Authenticator credential files"),
+    AP_INIT_TAKE1("GoogleAuthCookieDomain", ap_set_string_slot,
+                   (void *)APR_OFFSETOF(authn_google_config_rec, cookieDomain),
+                   OR_AUTHCFG, "Cookie Domain to set(if any)"),
+    AP_INIT_TAKE1("GoogleAuthCookiePath", ap_set_string_slot,
+                   (void *)APR_OFFSETOF(authn_google_config_rec, cookiePath),
+                   OR_AUTHCFG, "Cookie Path to set(if any)"),
     AP_INIT_TAKE1("GoogleAuthCookieLife", set_authn_set_int,
                    (void *)APR_OFFSETOF(authn_google_config_rec, cookieLife),
                    OR_AUTHCFG, "Life (in seconds) authentication cookie before revalidation required"),
+    AP_INIT_TAKE1("GoogleAuthCookieSecure", set_authn_set_int,
+                   (void *)APR_OFFSETOF(authn_google_config_rec, cookieSecure),
+                   OR_AUTHCFG, "Mark cookie secure (https only)"),
     AP_INIT_TAKE1("GoogleAuthLogLevel", set_authn_set_int,
                    (void *)APR_OFFSETOF(authn_google_config_rec, debugLevel),
                    OR_AUTHCFG, "Verbosity level of debug output (zero=off)"),
@@ -130,6 +145,31 @@ static const command_rec authn_google_cmds[] =
 
 module AP_MODULE_DECLARE_DATA authn_google_module;
 
+static int bad_username(const char *username)
+{
+	if (*username == 0)
+	{
+		return 1;
+	}
+	for(; *username; ++username)
+	{
+		if (	*username <= ' ' //we simply don't like it
+			|| *username == ':' //cookie value separator
+			|| *username == ';' //cookie options separator
+			// some from https://en.wikipedia.org/wiki/Filename#Reserved_characters_and_words
+			|| *username == '/'
+			|| *username == '\\'
+			|| *username == '?'
+			|| *username == '*'
+			|| *username == '|'
+			|| *username == '"'
+			|| *username == '<'
+			|| *username == '>'
+			)
+			return 1;
+	}
+	return 0;
+}
 
 static char * hash_cookie(apr_pool_t *p, uint8_t *secret,int secretLen,unsigned long expires) {
 		unsigned char hash[SHA1_DIGEST_LENGTH];
@@ -149,8 +189,8 @@ static char *getSharedKey(request_rec *r,char *filename, char **static_pw) {
 
 		authn_google_config_rec *conf = ap_get_module_config(r->per_dir_config, &authn_google_module);
     status = ap_pcfg_openfile(&f, r->pool, filename);
-ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
-"OPENING FILENAME %s",filename);
+    if (conf->debugLevel)
+	ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r, "OPENING FILENAME %s",filename);
 
     if (status != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, status, r,
@@ -194,16 +234,14 @@ if (conf->debugLevel)
 static uint8_t *getUserSecret(request_rec *r, const char *username, int *secretLen, char **static_pw) {
     authn_google_config_rec *conf = ap_get_module_config(r->per_dir_config,
                                                        &authn_google_module);
+		
+		if (conf->debugLevel)
+		    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "getUserSecret with username \"%s\"\n",username);
+		
+		if (bad_username(username)) return 0L;
+		
 		char *ga_filename = apr_psprintf(r->pool,"%s/%s",conf->pwfile,username);
-		char *sharedKey;
-
-ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-"getUserSecret with username \"%s\"\n",username);
-		sharedKey = getSharedKey(r,ga_filename,static_pw);
-		if (!sharedKey)
-        return 0L;
-
-
+		char *sharedKey = getSharedKey(r,ga_filename,static_pw);
 		if (!sharedKey)
 			return 0L;
 
@@ -237,7 +275,7 @@ static int find_cookie(request_rec *r,char **user,uint8_t *secret,int secretLen)
 					ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
 												"Found cookie \"%s\"",cookie);
 		if (!ap_regexec(cookie_regexp, cookie, AP_MAX_REG_MATCH, regmatch, 0)) {
-			if (user) *user  = ap_pregsub(r->pool, "$2", cookie,AP_MAX_REG_MATCH,regmatch);
+			*user  = ap_pregsub(r->pool, "$2", cookie,AP_MAX_REG_MATCH,regmatch);
 			cookie_expire = ap_pregsub(r->pool, "$3", cookie,AP_MAX_REG_MATCH,regmatch);
 			cookie_valid = ap_pregsub(r->pool, "$4", cookie,AP_MAX_REG_MATCH,regmatch);
 				
@@ -245,7 +283,7 @@ if (conf->debugLevel)
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "Found cookie Expires \"%s\" Valid \"%s\"",cookie_expire,cookie_valid);
 
-				if (cookie_expire && cookie_valid && *user) {
+				if (cookie_expire && cookie_valid && (!bad_username(*user))) {
 					long unsigned int exp = apr_atoi64(cookie_expire);
 					long unsigned int now = apr_time_now()/1000000;
 					if (exp < now) {
@@ -339,7 +377,13 @@ static void addCookie(request_rec *r, uint8_t *secret, int secretLen) {
 
 		unsigned long exp = (apr_time_now() / (1000000) ) + conf->cookieLife;
 		char *h = hash_cookie(r->pool,secret,secretLen,exp);
-		char * cookie = apr_psprintf(r->pool,"google_authn=%s:%lu:%s",r->user,exp,h);
+		char * cookie = apr_psprintf(r->pool,
+		    "google_authn=%s:%lu:%s%s%s%s%s%s",
+		    r->user, exp, h,
+		    conf->cookieSecure ? "; Secure" : "",
+		    conf->cookiePath ? "; Path=" : "", conf->cookiePath ? conf->cookiePath : "",
+		    conf->cookieDomain ? "; Domain=" : "", conf->cookieDomain ? conf->cookieDomain : ""
+		    );
 
 if (conf->debugLevel)
 		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -451,11 +495,13 @@ if (conf->debugLevel)
 
 		unsigned char *hash = apr_palloc(r->pool,APR_MD5_DIGESTSIZE);
 
-
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+			"GetRealmHash called for sharedkey \"%s/%s\"\n", conf->pwfile, user);
+		
+		if (bad_username(user)) return AUTH_USER_NOT_FOUND;
+		
 		ga_filename = apr_psprintf(r->pool,"%s/%s",conf->pwfile,user);
 
-    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-"GetRealmHash called for sharedkey \"%s\"\n",ga_filename);
 		sharedKey = getSharedKey(r,ga_filename,&static_pw);
 
 		if (!sharedKey)
